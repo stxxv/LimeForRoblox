@@ -1,4 +1,12 @@
+--[[
+
+	This library has been modified with generative AI to fix performance issues.
+
+]]
+
 repeat task.wait() until game:IsLoaded()
+
+local cloneref = cloneref or function(o) return o end
 local MarketplaceService = cloneref(game:GetService("MarketplaceService"))
 local UserInputService = cloneref(game:GetService("UserInputService"))
 local TweenService = cloneref(game:GetService("TweenService"))
@@ -9,6 +17,7 @@ local RunService = cloneref(game:GetService("RunService"))
 local StarterGui = cloneref(game:GetService("StarterGui"))
 local Lighting = cloneref(game:GetService("Lighting"))
 local Players = cloneref(game:GetService("Players"))
+local Debris = cloneref(game:GetService("Debris"))
 local CoreGui = cloneref(game:GetService("CoreGui"))
 local LocalPlayer = cloneref(Players.LocalPlayer)
 local PlayerGui = cloneref(LocalPlayer.PlayerGui)
@@ -24,6 +33,7 @@ local Library = {
 }
 
 local AutoSave = true
+local ConfigDirty = false
 local ConfigName = nil
 local LimeFolder = "Lime"
 local ConfigsFolder = LimeFolder .. "/configs"
@@ -47,13 +57,25 @@ if isfile(CurrentGameConfig) then
 	end
 end
 
+local function SaveConfig()
+	if not Library.Uninject and isfile and writefile then
+		local Success, Encoded = pcall(HttpService.JSONEncode, HttpService, ConfigTable)
+		if Success and Encoded then
+			pcall(writefile, CurrentGameConfig, Encoded)
+		end
+	end
+	ConfigDirty = false
+end
+
 task.spawn(function()
 	while AutoSave do
-		task.wait(0.5)
-		if not Library.Uninject then
-			writefile(CurrentGameConfig, HttpService:JSONEncode(ConfigTable))
-		else
+		task.wait(2)
+		if Library.Uninject then
 			AutoSave = false
+			break
+		end
+		if ConfigDirty then
+			SaveConfig()
 		end
 	end
 end)
@@ -102,7 +124,9 @@ elseif UserInputService.TouchEnabled and UserInputService.KeyboardEnabled and Us
 end
 
 local function MakeDraggable(v)
-	local Dragging, Input2, StartDragging, StartPos = nil, nil, nil, nil
+	local Dragging, StartDragging, StartPos = false, nil, nil
+	local dragInputConn, dragEndConn
+
 	local function Update(Input)
 		local Delta = Input.Position - StartDragging
 		v.Position = UDim2.new(StartPos.X.Scale, StartPos.X.Offset + Delta.X, StartPos.Y.Scale, StartPos.Y.Offset + Delta.Y)
@@ -114,23 +138,28 @@ local function MakeDraggable(v)
 			StartDragging = Input.Position
 			StartPos = v.Position
 
-			Input.Changed:Connect(function()
-				if Input.UserInputState == Enum.UserInputState.End then
-					Dragging = false
+			if dragInputConn then dragInputConn:Disconnect() end
+			if dragEndConn then dragEndConn:Disconnect() end
+
+			dragInputConn = UserInputService.InputChanged:Connect(function(moveInput)
+				if Dragging and (moveInput.UserInputType == Enum.UserInputType.MouseMovement or moveInput.UserInputType == Enum.UserInputType.Touch) then
+					Update(moveInput)
 				end
 			end)
-		end
-	end)
 
-	v.InputChanged:Connect(function(Input)
-		if Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch then
-			Input2 = Input
-		end
-	end)
-
-	UserInputService.InputChanged:Connect(function(Input)
-		if Input == Input2 and Dragging then
-			Update(Input)
+			dragEndConn = UserInputService.InputEnded:Connect(function(endInput)
+				if endInput.UserInputType == Enum.UserInputType.MouseButton1 or endInput.UserInputType == Enum.UserInputType.Touch then
+					Dragging = false
+					if dragInputConn then
+						dragInputConn:Disconnect()
+						dragInputConn = nil
+					end
+					if dragEndConn then
+						dragEndConn:Disconnect()
+						dragEndConn = nil
+					end
+				end
+			end)
 		end
 	end)
 end
@@ -150,6 +179,7 @@ local function PlaySound(id)
 	Sound.SoundId = "rbxassetid://" .. id
 	Sound.Parent = SoundService
 	Sound:Play()
+	Debris:AddItem(Sound, 5)
 	Sound.Ended:Connect(function()
 		Sound:Destroy()
 	end)
@@ -300,6 +330,12 @@ function Library:CreateMain()
 	UIListLayout_4.SortOrder = Enum.SortOrder.LayoutOrder
 
 	local function AddArray(name)
+		for _, v in ipairs(ArrayTable) do
+			if v.Name == name then
+				return
+			end
+		end
+
 		local TextLabel = Instance.new("TextLabel")
 		TextLabel.Parent = ArrayFrame
 		TextLabel.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
@@ -322,8 +358,9 @@ function Library:CreateMain()
 		TextGradient.Parent = TextLabel
 
 		local MaxWidth = ArrayFrame.AbsoluteSize.X
-		local TextSize = game.TextService:GetTextSize("  " .. name .. "  ", TextLabel.TextSize, TextLabel.Font, Vector2.new(MaxWidth, math.huge))
-		TextLabel.Size = UDim2.new(0, TextSize.X - TextSize.X, 0, 23)
+		local TextSize = TextService:GetTextSize("  " .. name .. "  ", TextLabel.TextSize, TextLabel.Font, Vector2.new(MaxWidth, math.huge))
+		TextLabel:SetAttribute("TextWidth", TextSize.X)
+		TextLabel.Size = UDim2.new(0, 0, 0, 23)
 		local NewSize = UDim2.new(0, TextSize.X, 0, 22)
 		if name == "" then
 			NewSize = UDim2.new(0, 0, 0, 0)
@@ -338,26 +375,28 @@ function Library:CreateMain()
 		end
 
 		table.insert(ArrayTable, TextLabel)
-		table.sort(ArrayTable, function(a, b) return game.TextService:GetTextSize(a.Text, a.TextSize, a.Font, Vector2.new(MaxWidth, math.huge)).X > game.TextService:GetTextSize(b.Text, b.TextSize, b.Font, Vector2.new(MaxWidth, math.huge)).X end)
+		table.sort(ArrayTable, function(a, b)
+			return (a:GetAttribute("TextWidth") or 0) > (b:GetAttribute("TextWidth") or 0)
+		end)
 		for i, v in ipairs(ArrayTable) do
 			v.LayoutOrder = i
 		end
 	end
 
 	local function RemoveArray(name)
-		local MaxWidth = ArrayFrame.AbsoluteSize.X
-		table.sort(ArrayTable, function(a, b) return game.TextService:GetTextSize(a.Text, a.TextSize, a.Font, Vector2.new(MaxWidth, math.huge)).X > game.TextService:GetTextSize(b.Text, b.TextSize, b.Font, Vector2.new(MaxWidth, math.huge)).X end)
-		for i, v in ipairs(ArrayTable) do
-			if v.Text == "  " .. name .. "  " then
+		for i = #ArrayTable, 1, -1 do
+			local v = ArrayTable[i]
+			if v.Name == name or v.Text == "  " .. name .. "  " then
+				table.remove(ArrayTable, i)
 				v.TextTransparency = 1
-				local TextSize = game.TextService:GetTextSize("  " .. name .. "  ", v.TextSize, v.Font, Vector2.new(MaxWidth, math.huge))
-				local ArrayOut = TweenService:Create(v, TweenInfo.new(0.1), {Size = UDim2.new(0.01, -TextSize + TextSize, 0, 20)})
+				local ArrayOut = TweenService:Create(v, TweenInfo.new(0.1), {Size = UDim2.new(0, 0, 0, 20)})
 				if ArrayOut then
 					ArrayOut:Play()
 					ArrayOut.Completed:Connect(function()
 						v:Destroy()
-						table.remove(ArrayTable, i)
 					end)
+				else
+					v:Destroy()
 				end
 			end
 		end
@@ -433,42 +472,6 @@ function Library:CreateMain()
 		UIListLayout_5.Parent = ManagerMenu
 		UIListLayout_5.SortOrder = Enum.SortOrder.LayoutOrder
 
-		task.spawn(function()
-			local FolderTable = {}
-			repeat
-				task.wait()
-				if ManagerMenu and isfolder(CurrentGameFolder) then
-					for _, v in ipairs(listfiles(CurrentGameFolder)) do
-						if isfile(v) and not table.find(FolderTable, v) then
-							table.insert(FolderTable, v)
-							for _, b in pairs(ManagerMenu:GetChildren()) do
-								if b:IsA("TextLabel") and b.Text ~= v then
-									local TextLabel_1 = Instance.new("TextLabel")
-									TextLabel_1.Parent = ManagerMenu
-									TextLabel_1.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
-									TextLabel_1.BorderColor3 = Color3.fromRGB(0, 0, 0)
-									TextLabel_1.BorderSizePixel = 0
-									TextLabel_1.Size = UDim2.new(1, 0, 0, 25)
-									TextLabel_1.Font = Enum.Font.SourceSans
-									TextLabel_1.Text = v
-									TextLabel_1.TextColor3 = Color3.fromRGB(255, 255, 255)
-									TextLabel_1.TextSize = 14.000
-									break
-								end
-							end
-						elseif not isfile(v) and table.find(FolderTable, v) then
-							table.remove(FolderTable, v)
-							for _ , b in pairs(ManagerMenu:GetChildren()) do
-								if b:IsA("TextLabel") and b.Text == v then
-									b:Destroy()
-								end
-							end
-						end
-					end
-				end
-			until Library.Stopped
-		end)
-
 		local ManagerText = Instance.new("TextLabel")
 		ManagerText.Parent = ManagerMenu
 		ManagerText.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
@@ -482,6 +485,40 @@ function Library:CreateMain()
 		ManagerText.TextColor3 = Color3.fromRGB(255, 255, 255)
 		ManagerText.TextSize = 16.000
 		ManagerText.TextTransparency = 0.350
+
+		local function RefreshConfigs()
+			if not ManagerMenu or not isfolder(CurrentGameFolder) then return end
+			for _, b in ipairs(ManagerMenu:GetChildren()) do
+				if b:IsA("TextLabel") and b ~= ManagerText then
+					b:Destroy()
+				end
+			end
+			for _, v in ipairs(listfiles(CurrentGameFolder)) do
+				if isfile(v) then
+					local TextLabel_1 = Instance.new("TextLabel")
+					TextLabel_1.Parent = ManagerMenu
+					TextLabel_1.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
+					TextLabel_1.BorderColor3 = Color3.fromRGB(0, 0, 0)
+					TextLabel_1.BorderSizePixel = 0
+					TextLabel_1.Size = UDim2.new(1, 0, 0, 25)
+					TextLabel_1.Font = Enum.Font.SourceSans
+					TextLabel_1.Text = v
+					TextLabel_1.TextColor3 = Color3.fromRGB(255, 255, 255)
+					TextLabel_1.TextSize = 14.000
+				end
+			end
+		end
+
+		RefreshConfigs()
+
+		task.spawn(function()
+			while not Library.Stopped do
+				task.wait(3)
+				if Manager and Manager.Visible and ManagerMenu and ManagerMenu.Visible then
+					RefreshConfigs()
+				end
+			end
+		end)
 
 		local ManagerControl = Instance.new("Frame")
 		ManagerControl.Parent = ManagerList
@@ -526,6 +563,7 @@ function Library:CreateMain()
 				local OldConfig = ConfigsFolder .. "/" .. game.PlaceId .. "/" .. ConfigName .. ".lua"
 				if isfile(OldConfig) then
 					delfile(OldConfig)
+					RefreshConfigs()
 				end
 			end
 		end)
@@ -546,6 +584,7 @@ function Library:CreateMain()
 				local NewConfig = ConfigsFolder .. "/" .. game.PlaceId .. "/" .. ConfigName .. ".lua"
 				if not isfile(NewConfig) then
 					writefile(NewConfig, readfile(CurrentGameConfig))
+					RefreshConfigs()
 				end
 			end
 		end)
@@ -627,35 +666,56 @@ function Library:CreateMain()
 	TargetGradient.Parent = HealthFront
 	TargetGradient.Color = ColorSequence.new{ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 255, 255)), ColorSequenceKeypoint.new(1.00, Color3.fromRGB(138, 230, 255))}
 
+	local lastTargetName = nil
+	local lastTargetThumbnail = nil
+	local healthTween = nil
+
 	function Main:CreateTargetHUD(name, thumbnail, humanoid, ishere)
 		local TargetHUD = {}
 
-		if ishere then
-			TargetFrame.Visible = true
-			if name and humanoid then
-				TargetImage.Image = thumbnail
+		if ishere and name and humanoid then
+			if not TargetFrame.Visible then
+				TargetFrame.Visible = true
+			end
+
+			if lastTargetName ~= name then
+				lastTargetName = name
 				TargetName.Text = name
-
-				local Calculation = humanoid.Health / humanoid.MaxHealth
-				local NewTextSize = game:GetService("TextService"):GetTextSize(TargetName.Text, TargetName.TextSize, TargetName.Font, Vector2.new(9999, 50))
+				local NewTextSize = TextService:GetTextSize(name, TargetName.TextSize, TargetName.Font, Vector2.new(9999, 50))
 				local Width = NewTextSize.X + TargetImage.Size.X.Offset + 20
-				local NewSize_2 = UDim2.new(0, Width, 0, 50)
-
-				TargetFrame.Size = NewSize_2
+				TargetFrame.Size = UDim2.new(0, Width, 0, 50)
 				HealthBack.Size = UDim2.new(0, NewTextSize.X, 0, 8)
 				TargetName.Size = UDim2.new(0, NewTextSize.X, 0, NewTextSize.Y)
 				TargetName.Position = UDim2.new(0, HealthBack.Position.X.Offset, 0.12, 0)
+			end
 
-				if humanoid.Health > 0 then
-					TweenService:Create(HealthFront, TweenInfo.new(0.5), {Size = UDim2.new(Calculation, 0, 0, 8)}):Play()
-				elseif humanoid.Health < 0 then
-					TweenService:Create(HealthFront, TweenInfo.new(0.5), {Size = UDim2.new(-0, 0, 0, 8)}):Play()
-				else
-					TweenService:Create(HealthFront, TweenInfo.new(0.5), {Size = UDim2.new(-0, 0, 0, 8)}):Play()
+			if lastTargetThumbnail ~= thumbnail then
+				lastTargetThumbnail = thumbnail
+				TargetImage.Image = thumbnail or ""
+			end
+
+			local maxHealth = humanoid.MaxHealth
+			local currentHealth = humanoid.Health
+			local Calculation = 0
+			if maxHealth and maxHealth > 0 and currentHealth then
+				Calculation = math.clamp(currentHealth / maxHealth, 0, 1)
+			end
+
+			if healthTween then
+				healthTween:Cancel()
+			end
+			healthTween = TweenService:Create(HealthFront, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Size = UDim2.new(Calculation, 0, 0, 8)})
+			healthTween:Play()
+		else
+			if TargetFrame.Visible then
+				TargetFrame.Visible = false
+				lastTargetName = nil
+				lastTargetThumbnail = nil
+				if healthTween then
+					healthTween:Cancel()
+					healthTween = nil
 				end
 			end
-		else
-			TargetFrame.Visible = false
 		end
 
 		return TargetHUD
@@ -676,13 +736,23 @@ function Library:CreateMain()
 		return Line
 	end
 
+	local lastHud, lastArraylist, lastWatermark = nil, nil, nil
 	task.spawn(function()
-		repeat
-			task.wait()
+		while not Library.Stopped do
+			task.wait(0.1)
 			if Library.Visual then
-				HudFrame.Visible = Library.Visual.Hud
-				ArrayFrame.Visible = Library.Visual.Arraylist
-				Watermark.Visible = Library.Visual.Watermark
+				if Library.Visual.Hud ~= lastHud then
+					lastHud = Library.Visual.Hud
+					HudFrame.Visible = lastHud
+				end
+				if Library.Visual.Arraylist ~= lastArraylist then
+					lastArraylist = Library.Visual.Arraylist
+					ArrayFrame.Visible = lastArraylist
+				end
+				if Library.Visual.Watermark ~= lastWatermark then
+					lastWatermark = Library.Visual.Watermark
+					Watermark.Visible = lastWatermark
+				end
 			end
 			if Library.Uninject then
 				ScreenGui:Destroy()
@@ -696,8 +766,9 @@ function Library:CreateMain()
 					Icon = "rbxassetid://182496371",
 					Duration = 2,
 				})
+				break
 			end
-		until Library.Stopped
+		end
 	end)
 
 	UserInputService.InputBegan:Connect(function(Input, isTyping)
@@ -910,7 +981,10 @@ function Library:CreateMain()
 				UIListLayout_2.SortOrder = Enum.SortOrder.LayoutOrder
 			end
 
+			local SetToggleState, ToggleButtonClicked
+
 			local Keybinds
+			local UpdateKeybindText
 			if Library.DeviceType == "Mouse" then
 				Keybinds = Instance.new("TextBox")
 				Keybinds.Parent = ToggleMenu
@@ -926,39 +1000,35 @@ function Library:CreateMain()
 				Keybinds.Text = ""
 				Keybinds.TextColor3 = Color3.fromRGB(255, 255, 255)
 				Keybinds.TextSize = 18.000
+
+				UpdateKeybindText = function()
+					if ToggleButton.Keybind and ToggleButton.Keybind ~= "Euro" and ToggleButton.Keybind ~= "None" then
+						Keybinds.PlaceholderText = ""
+						Keybinds.Text = ToggleButton.Keybind
+					else
+						Keybinds.PlaceholderText = "None"
+						Keybinds.Text = ""
+					end
+				end
+				UpdateKeybindText()
+
 				UserInputService.InputBegan:Connect(function(Input, isTyping)
-					if Input.UserInputType == Enum.UserInputType.Keyboard then
-						if Keybinds:IsFocused() then
-							ToggleButton.Keybind = Input.KeyCode.Name
-							Keybinds.PlaceholderText = ""
-							Keybinds.Text = Input.KeyCode.Name
-							Keybinds:ReleaseFocus()
-							ConfigTable.Libraries.ToggleButton[ToggleButton.Name].Keybind = ToggleButton.Keybind
-						elseif ToggleButton.Keybind == "Backspace" then
+					if Library.Stopped then return end
+					if Input.UserInputType == Enum.UserInputType.Keyboard and Keybinds:IsFocused() then
+						if Input.KeyCode == Enum.KeyCode.Backspace then
 							ToggleButton.Keybind = "Euro"
-							Keybinds.Text = ""
-							Keybinds.PlaceholderText = "None"
-							Keybinds:ReleaseFocus()
 							ConfigTable.Libraries.ToggleButton[ToggleButton.Name].Keybind = ToggleButton.Keybind
+							ConfigDirty = true
+							UpdateKeybindText()
+							Keybinds:ReleaseFocus()
+						elseif Input.KeyCode ~= Enum.KeyCode.Unknown then
+							ToggleButton.Keybind = Input.KeyCode.Name
+							ConfigTable.Libraries.ToggleButton[ToggleButton.Name].Keybind = ToggleButton.Keybind
+							ConfigDirty = true
+							UpdateKeybindText()
+							Keybinds:ReleaseFocus()
 						end       
 					end
-					task.spawn(function()
-						repeat
-							task.wait()
-							if ToggleButton.Keybind ~= "Euro" then
-								Keybinds.PlaceholderText = ""
-								Keybinds.Text = ToggleButton.Keybind
-							end
-							if Library.Uninject then
-								task.wait(1.5)
-								if Keybinds and ToggleButton.Keybind then
-									Keybinds.Text = ""
-									ToggleButton.Keybind = "Euro"
-									Keybinds.PlaceholderText = "None"
-								end
-							end
-						until Library.Stopped
-					end)
 				end)
 			elseif Library.DeviceType == "Touch" then
 				local SmallKeybinds, IsKeybind = nil, false
@@ -978,7 +1048,7 @@ function Library:CreateMain()
 				Keybinds.Visible = true
 
 				local function CreateMiniKeybind()
-					local NewSize4 = game:GetService("TextService"):GetTextSize(ToggleButton.Name, 14, Enum.Font.Roboto, Vector2.new(200, math.huge))
+					local NewSize4 = TextService:GetTextSize(ToggleButton.Name, 14, Enum.Font.Roboto, Vector2.new(200, math.huge))
 					local MiniKeybind = Instance.new("TextButton")
 					MiniKeybind.Parent = KeybindFrame
 					MiniKeybind.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -994,52 +1064,36 @@ function Library:CreateMain()
 					MiniKeybind.TextScaled = true
 					MiniKeybind.TextSize = 14.000
 					MiniKeybind.TextWrapped = true
-					MiniKeybind.TextScaled = true
 					MakeDraggable(MiniKeybind)
 
-					local function MiniKeyClicked()
-						if ToggleButton.Enabled then
-							AddArray(ToggleButton.Name)
-							MiniKeybind.BackgroundColor3 = Color3.fromRGB(46, 204, 113)
-							ConfigTable.Libraries.ToggleButton[ToggleButton.Name].Enabled = ToggleButton.Enabled
-							TweenService:Create(ToggleMain, TweenInfo.new(0.4), {Transparency = 0,BackgroundColor3 = Color3.fromRGB(232, 30, 100)}):Play()
-						else
-							RemoveArray(ToggleButton.Name)
-							MiniKeybind.BackgroundColor3 = Color3.fromRGB(192, 57, 43)
-							ConfigTable.Libraries.ToggleButton[ToggleButton.Name].Enabled = ToggleButton.Enabled
-							TweenService:Create(ToggleMain, TweenInfo.new(0.4), {Transparency = 0.230,BackgroundColor3 = Color3.fromRGB(30, 30, 30)}):Play()
-						end
-					end
-					
-					task.spawn(function()
-						repeat
-							task.wait()
+					local function UpdateMiniKeybindColor()
+						if MiniKeybind and MiniKeybind.Parent then
 							if ToggleButton.Enabled then
 								MiniKeybind.BackgroundColor3 = Color3.fromRGB(46, 204, 113)
 							else
 								MiniKeybind.BackgroundColor3 = Color3.fromRGB(192, 57, 43)
 							end
-						until Library.Stopped
-					end)
-					
-					MiniKeybind.MouseButton1Click:Connect(function()
-						ToggleButton.Enabled = not ToggleButton.Enabled
-						MiniKeyClicked()
-						if ToggleButton.Callback then
-							ToggleButton.Callback(ToggleButton.Enabled)
 						end
+					end
+
+					UpdateMiniKeybindColor()
+
+					MiniKeybind.MouseButton1Click:Connect(function()
+						SetToggleState(not ToggleButton.Enabled)
 					end)
 
 					MiniKeybind:GetPropertyChangedSignal("Position"):Connect(function()
 						ToggleButton.MiniKeybind.Position = MiniKeybind.Position
 						ConfigTable.Libraries.ToggleButton[ToggleButton.Name].MiniKeybind.Position = MiniKeybind.Position
+						ConfigDirty = true
 					end)
 				end
-				
+
 				Keybinds.MouseButton1Click:Connect(function()
 					IsKeybind = not IsKeybind
 					ToggleButton.MiniKeybind.Visibility = IsKeybind
 					ConfigTable.Libraries.ToggleButton[ToggleButton.Name].MiniKeybind.Visibility = IsKeybind
+					ConfigDirty = true
 					if IsKeybind then
 						Keybinds.TextTransparency = 0.5
 						CreateMiniKeybind()
@@ -1052,161 +1106,118 @@ function Library:CreateMain()
 						Keybinds.TextTransparency = 0
 					end
 				end)
-				
+
 				if ToggleButton.MiniKeybind.Visibility then
 					IsKeybind = true
 					Keybinds.TextTransparency = 0.5
 					CreateMiniKeybind()
 				end
 			end
-			
-			local MenuTween = "C"
-			task.spawn(function()
-				repeat
-					task.wait()
-					if MenuTween == "O" then
-						for _, v in pairs(ToggleMenu:GetChildren()) do
-							if v:IsA("GuiObject") then
-								v.Visible = true
-							end
-						end
-					elseif MenuTween == "C" then
-						for _, v in pairs(ToggleMenu:GetChildren()) do
-							if v:IsA("GuiObject") then
-								v.Visible = false
-							end
-						end
-					end
-				until Library.Stopped
-			end)
 
-			local function ToggleButtonClicked()
+			ToggleButtonClicked = function()
 				if ToggleButton.Enabled then
-					TweenService:Create(ToggleMain, TweenInfo.new(0.4), {Transparency = 0,BackgroundColor3 = Color3.fromRGB(232, 30, 100)}):Play()
+					TweenService:Create(ToggleMain, TweenInfo.new(0.4), {Transparency = 0, BackgroundColor3 = Color3.fromRGB(232, 30, 100)}):Play()
 					AddArray(ToggleButton.Name)
-					ConfigTable.Libraries.ToggleButton[ToggleButton.Name].Enabled = ToggleButton.Enabled
 				else
-					TweenService:Create(ToggleMain, TweenInfo.new(0.4), {Transparency = 0.230,BackgroundColor3 = Color3.fromRGB(30, 30, 30)}):Play()
+					TweenService:Create(ToggleMain, TweenInfo.new(0.4), {Transparency = 0.230, BackgroundColor3 = Color3.fromRGB(30, 30, 30)}):Play()
 					RemoveArray(ToggleButton.Name)
-					ConfigTable.Libraries.ToggleButton[ToggleButton.Name].Enabled = ToggleButton.Enabled
+				end
+				ConfigTable.Libraries.ToggleButton[ToggleButton.Name].Enabled = ToggleButton.Enabled
+				ConfigDirty = true
+
+				if Library.DeviceType == "Touch" and KeybindFrame then
+					local mini = KeybindFrame:FindFirstChild(ToggleButton.Name)
+					if mini and mini:IsA("TextButton") then
+						mini.BackgroundColor3 = ToggleButton.Enabled and Color3.fromRGB(46, 204, 113) or Color3.fromRGB(192, 57, 43)
+					end
 				end
 			end
 
-			task.spawn(function()
-				repeat
-					task.wait(1)
-					if ToggleButton.AutoDisable then
-						if ToggleButton.Enabled then
-							ToggleButton.Enabled = false
-							ToggleButtonClicked()
-
-							if ToggleButton.Callback then
-								ToggleButton.Callback(ToggleButton.Enabled)
-							end
-						end
-					end
-					if Library.Uninject then
-						task.wait(1.5)
-						if ToggleButton.Enabled then
-							ToggleButton.Enabled = false
-							ToggleButtonClicked()
-
-							if ToggleButton.Callback then
-								ToggleButton.Callback(ToggleButton.Enabled)
-							end
-						end
-					end
-				until Library.Stopped
-			end)
-
-			if ToggleButton.Enabled then
-				ToggleButton.Enabled = true
+			SetToggleState = function(state)
+				ToggleButton.Enabled = state
 				ToggleButtonClicked()
 
 				if ToggleButton.Callback then
 					ToggleButton.Callback(ToggleButton.Enabled)
+				end
+
+				if state and ToggleButton.AutoDisable then
+					task.delay(1, function()
+						if ToggleButton.Enabled and not Library.Stopped then
+							SetToggleState(false)
+						end
+					end)
+				end
+			end
+
+			if ToggleButton.Enabled then
+				ToggleButtonClicked()
+				if ToggleButton.Callback then
+					ToggleButton.Callback(ToggleButton.Enabled)
+				end
+				if ToggleButton.AutoDisable then
+					task.delay(1, function()
+						if ToggleButton.Enabled and not Library.Stopped then
+							SetToggleState(false)
+						end
+					end)
 				end
 			end
 
 			ToggleMain.MouseButton1Click:Connect(function()
-				ToggleButton.Enabled = not ToggleButton.Enabled
-				ToggleButtonClicked()
-
-				if ToggleButton.Callback then
-					ToggleButton.Callback(ToggleButton.Enabled)
-				end
+				SetToggleState(not ToggleButton.Enabled)
 			end)
 
-			ToggleMain.MouseButton2Click:Connect(function()
-				IsToggleMenu = not IsToggleMenu
-				if IsToggleMenu then
+			local function SetMenuOpen(open)
+				IsToggleMenu = open
+				if open then
 					ToggleMenu.Visible = true
-					TweenService:Create(OpenMenu, TweenInfo.new(0.4), {Rotation = 90}):Play()
-					if GetChildrenY(ToggleMenu) then
-						local OpeningMenu = TweenService:Create(ToggleMenu, TweenInfo.new(0.4), {Size = GetChildrenY(ToggleMenu)})
-						if OpeningMenu then
-							OpeningMenu:Play()
-							OpeningMenu.Completed:Connect(function()
-								MenuTween = "O"
-								ToggleMenu.AutomaticSize = Enum.AutomaticSize.Y
-							end)
+					for _, v in ipairs(ToggleMenu:GetChildren()) do
+						if v:IsA("GuiObject") then
+							v.Visible = true
 						end
+					end
+					TweenService:Create(OpenMenu, TweenInfo.new(0.4), {Rotation = 90}):Play()
+					local targetSize = GetChildrenY(ToggleMenu)
+					if targetSize then
+						local OpeningMenu = TweenService:Create(ToggleMenu, TweenInfo.new(0.4), {Size = targetSize})
+						OpeningMenu:Play()
+						OpeningMenu.Completed:Connect(function()
+							ToggleMenu.AutomaticSize = Enum.AutomaticSize.Y
+						end)
 					end
 				else
 					TweenService:Create(OpenMenu, TweenInfo.new(0.4), {Rotation = 0}):Play()
+					ToggleMenu.AutomaticSize = Enum.AutomaticSize.None
 					local ClosingMenu = TweenService:Create(ToggleMenu, TweenInfo.new(0.4), {Size = UDim2.new(1, 0, 0, 0)})
-					if ClosingMenu then
-						MenuTween = "C"
-						ClosingMenu:Play()
-						ToggleMenu.AutomaticSize = Enum.AutomaticSize.None
-						ClosingMenu.Completed:Connect(function()
-							ToggleMenu.Visible = false
-						end)
-					end
+					ClosingMenu:Play()
+					ClosingMenu.Completed:Connect(function()
+						ToggleMenu.Visible = false
+						for _, v in ipairs(ToggleMenu:GetChildren()) do
+							if v:IsA("GuiObject") then
+								v.Visible = false
+							end
+						end
+					end)
 				end
+			end
+
+			ToggleMain.MouseButton2Click:Connect(function()
+				SetMenuOpen(not IsToggleMenu)
 			end)
 
 			OpenMenu.MouseButton1Click:Connect(function()
-				IsToggleMenu = not IsToggleMenu
-				if IsToggleMenu then
-					ToggleMenu.Visible = true
-					TweenService:Create(OpenMenu, TweenInfo.new(0.4), {Rotation = 90}):Play()
-					if GetChildrenY(ToggleMenu) then
-						local OpeningMenu = TweenService:Create(ToggleMenu, TweenInfo.new(0.4), {Size = GetChildrenY(ToggleMenu)})
-						if OpeningMenu then
-							OpeningMenu:Play()
-							OpeningMenu.Completed:Connect(function()
-								MenuTween = "O"
-								ToggleMenu.AutomaticSize = Enum.AutomaticSize.Y
-							end)
-						end
-					end
-				else
-					TweenService:Create(OpenMenu, TweenInfo.new(0.4), {Rotation = 0}):Play()
-					local ClosingMenu = TweenService:Create(ToggleMenu, TweenInfo.new(0.4), {Size = UDim2.new(1, 0, 0, 0)})
-					if ClosingMenu then
-						MenuTween = "C"
-						ClosingMenu:Play()
-						ToggleMenu.AutomaticSize = Enum.AutomaticSize.None
-						ClosingMenu.Completed:Connect(function()
-							ToggleMenu.Visible = false
-						end)
+				SetMenuOpen(not IsToggleMenu)
+			end)
+
+			UserInputService.InputBegan:Connect(function(Input, isTyping)
+				if isTyping or Library.Stopped then return end
+				if ToggleButton.Keybind and ToggleButton.Keybind ~= "Euro" and ToggleButton.Keybind ~= "None" then
+					if Input.KeyCode.Name == ToggleButton.Keybind then
+						SetToggleState(not ToggleButton.Enabled)
 					end
 				end
 			end)
-
-			if ToggleButton.Keybind then
-				UserInputService.InputBegan:Connect(function(Input, isTyping)
-					if Input.KeyCode == Enum.KeyCode[ToggleButton.Keybind] and not isTyping then
-						ToggleButton.Enabled = not ToggleButton.Enabled
-						ToggleButtonClicked()
-
-						if ToggleButton.Callback then
-							ToggleButton.Callback(ToggleButton.Enabled)
-						end
-					end
-				end)
-			end
 			
 			function ToggleButton:CreateTextBox(TextBox)
 				TextBox = {
@@ -1305,12 +1316,20 @@ function Library:CreateMain()
 				DropdownMode.TextXAlignment = Enum.TextXAlignment.Left
 
 				local CurrentDropdown = 1
+				for idx, val in ipairs(Dropdown.List) do
+					if val == Dropdown.Default then
+						CurrentDropdown = idx
+						break
+					end
+				end
+
 				DropdownHolder.MouseButton1Click:Connect(function()
-					DropdownSelected.Text = Dropdown.List[CurrentDropdown]
-					Dropdown.Callback(Dropdown.List[CurrentDropdown])
-					Selected = Dropdown.List[CurrentDropdown]
 					CurrentDropdown = CurrentDropdown % #Dropdown.List + 1
+					Selected = Dropdown.List[CurrentDropdown]
+					DropdownSelected.Text = Selected
 					ConfigTable.Libraries.Dropdown[Dropdown.Name].Default = Selected
+					ConfigDirty = true
+					Dropdown.Callback(Selected)
 				end)
 
 				if Dropdown.Default then
@@ -1405,6 +1424,8 @@ function Library:CreateMain()
 				SliderGradient.Color = ColorSequence.new{ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 255, 255)), ColorSequenceKeypoint.new(1.00, Color3.fromRGB(138, 230, 255))}
 				SliderGradient.Parent = SliderFront
 
+				local moveConn, endConn
+
 				local function UpdateValue(Input)
 					local MouseX = math.clamp(Input.Position.X, SliderMain.AbsolutePosition.X, SliderMain.AbsolutePosition.X + SliderMain.AbsoluteSize.X)
 					Value = math.floor(((MouseX - SliderMain.AbsolutePosition.X) / SliderMain.AbsoluteSize.X) * (Slider.Max - Slider.Min) + Slider.Min + 0.05) * 10 / 10
@@ -1412,6 +1433,7 @@ function Library:CreateMain()
 					SliderValue.Text = Value
 					Slider.Callback(Value)
 					ConfigTable.Libraries.Slider[Slider.Name].Default = Value
+					ConfigDirty = true
 				end
 
 				SliderBack.InputBegan:Connect(function(Input)
@@ -1422,18 +1444,31 @@ function Library:CreateMain()
 						SliderFront.Size = UDim2.new((Value - Slider.Min) / (Slider.Max - Slider.Min), 0, 1, 0)
 						SliderValue.Text = Value
 						Slider.Callback(Value)
-					end
-				end)
+						ConfigTable.Libraries.Slider[Slider.Name].Default = Value
+						ConfigDirty = true
 
-				SliderBack.InputEnded:Connect(function(Input)
-					if Input.UserInputType == Enum.UserInputType.MouseButton1 or Input.UserInputType == Enum.UserInputType.Touch then
-						Dragged = false
-					end
-				end)
+						if moveConn then moveConn:Disconnect() end
+						if endConn then endConn:Disconnect() end
 
-				UserInputService.InputChanged:Connect(function(Input)
-					if Dragged and (Input.UserInputType == Enum.UserInputType.MouseMovement or Input.UserInputType == Enum.UserInputType.Touch) then
-						UpdateValue(Input)
+						moveConn = UserInputService.InputChanged:Connect(function(moveInput)
+							if Dragged and (moveInput.UserInputType == Enum.UserInputType.MouseMovement or moveInput.UserInputType == Enum.UserInputType.Touch) then
+								UpdateValue(moveInput)
+							end
+						end)
+
+						endConn = UserInputService.InputEnded:Connect(function(endInput)
+							if endInput.UserInputType == Enum.UserInputType.MouseButton1 or endInput.UserInputType == Enum.UserInputType.Touch then
+								Dragged = false
+								if moveConn then
+									moveConn:Disconnect()
+									moveConn = nil
+								end
+								if endConn then
+									endConn:Disconnect()
+									endConn = nil
+								end
+							end
+						end)
 					end
 				end)
 
@@ -1445,6 +1480,8 @@ function Library:CreateMain()
 						SliderFront.Size = UDim2.new((Value - Slider.Min) / (Slider.Max - Slider.Min), 0, 1, 0)
 						SliderValue.Text = Value
 						Slider.Callback(Value)
+						ConfigTable.Libraries.Slider[Slider.Name].Default = Value
+						ConfigDirty = true
 					else
 						SliderValue.Text = Value
 					end
@@ -1537,6 +1574,7 @@ function Library:CreateMain()
 						TweenService:Create(MiniToggleClick, TweenInfo.new(0.4), {TextTransparency = 1}):Play()
 						ConfigTable.Libraries.MiniToggle[MiniToggle.Name].Enabled = MiniToggle.Enabled
 					end
+					ConfigDirty = true
 				end
 
 				if MiniToggle.Enabled then
